@@ -16,3 +16,7 @@ c# style events
 
 exception based case simulation
 	recipe-410695-1.py
+
+topo sort
+	recipe-577413-1.py
+	recipe-578272-1.py
