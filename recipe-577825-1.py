@@ -59,7 +59,7 @@ class Database:
 
     def __getattr__(self, name):
         "Allows getting table or view via attribute lookup or index notation."
-        t = tuple(self.__data.where(lambda r: r['name'] == name)('data'))
+        t = tuple(self.__data.where(ROW.name == name)('data'))
         assert len(t) < 3, 'Name is ambiguous!'
         assert len(t) > 1, 'Object was not found!'
         data = t[1][0]
@@ -80,7 +80,7 @@ class Database:
         self.__type.insert(Table, 'table')
         self.__type.insert(_View, 'view')
         self.__view = _View(None, lambda _: self.__data.left_join(self.__type, \
-            'Types', lambda row: row.type == row.Types.type) \
+            'Types', ROW.type == ROW.Types.type) \
             .select('name', 'Types.name', (lambda obj: \
             float(len(obj) if isinstance(obj, Table) else 'nan'), 'data')),
             ('Types.name', 'type'), ('<lambda>(data)', 'size'))
@@ -98,9 +98,9 @@ class Database:
 
     def create(self, name, schema_or_table_or_query, *name_changes):
         "Creates either a table or view for use in the database."
-        assert not self.__data.where(lambda row: row['name'] == name), \
+        assert not self.__data.where(ROW.name == name), \
                'Name is already used and may not be overloaded!'
-        if isinstance(schema_or_table_or_query, tuple):
+        if isinstance(schema_or_table_or_query, (tuple, list)):
             assert not name_changes, 'Name changes not allowed with schema!'
             data = Table(*schema_or_table_or_query)
         elif isinstance(schema_or_table_or_query, Table):
@@ -108,12 +108,12 @@ class Database:
             data = schema_or_table_or_query
         else:
             data = _View(self, schema_or_table_or_query, *name_changes)
-        self.__data.insert(name=name, type=data.__class__, data=data)
+        self.__data.insert(name=name, type=type(data), data=data)
         return data
 
     def drop(self, name):
         "Deletes a table or view from the database."
-        self.__data.delete(lambda row: row['name'] == name)
+        self.__data.delete(ROW.name == name)
 
     def print(self, end='\n\n', file=None):
         "Provides a simple way of showing a representation of the database."
@@ -220,8 +220,7 @@ class Database2(Database):
             .select('name', (lambda lock: lock.locked, 'lock')) \
             .as_(('<lambda>(lock)', 'locked')))
         self.__view = _View(None, lambda _: self._Database__view.value \
-            .left_join(self.__locked.value, 'Lock', \
-            lambda row: row.name == row.Lock.name) \
+            .left_join(self.__locked.value, 'Lock', ROW.name == ROW.Lock.name) \
             .select('name', 'type', 'size', 'Lock.locked'), \
             ('Lock.locked', 'locked'))
 
@@ -372,6 +371,21 @@ class Table:
             string = string[:-3] + '\n'
         return string[:-1]
 
+    def __str__(self):
+        names, *rows = self
+        columns = {name: [] for name in names}
+        for row in rows:
+            for key, value in zip(names, row):
+                columns[key].append(value)
+        lengths = tuple(max(len(str(value)) for value in columns[key] + [key])
+                       for key in names)
+        template = ' '.join(map('{{:{}}}'.format, lengths))
+        lines = [template.format(*map(str.upper, names)),
+                 ' '.join(map('-'.__mul__, lengths))]
+        for row in zip(*map(columns.__getitem__, names)):
+            lines.append(template.format(*row))
+        return '\n'.join(lines)
+
     def __iter__(self):
         "Returns an iterator over the table's columns."
         return self(*self.columns)
@@ -457,7 +471,7 @@ class Table:
 
     def copy(self):
         "Copies a table while sharing cell instances."
-        copy = self.__class__()
+        copy = type(self)()
         copy.__columns = self.__columns.copy()
         copy.__data_area = {}
         for key, value in self.__data_area.items():
@@ -481,7 +495,7 @@ class Table:
         excess = original - set(columns)
         if functions:
             return self.__select_with_function(excess, functions)
-        copy = self.__class__()
+        copy = type(self)()
         copy.__columns = self.__columns.copy()
         copy.__data_area = self.__data_area
         copy.__row_index = self.__row_index
@@ -489,21 +503,21 @@ class Table:
             copy.__columns.drop(column)
         return copy
 
-    def distict(self):
-        "Return copy of table having only distict rows."
-        copy = self.__class__()
+    def distinct(self):
+        "Return copy of table having only distinct rows."
+        copy = type(self)()
         copy.__columns = self.__columns
         copy.__data_area = self.__data_area.copy()
         copy.__row_index = self.__row_index
         valid_indexs = set()
-        distict_rows = set()
+        distinct_rows = set()
         for row in copy.__data_area:
             array = pickle.dumps(tuple(copy.__data_area[row][index] \
                                        for index, name, data_type \
                                        in self.__columns))
-            if array not in distict_rows:
+            if array not in distinct_rows:
                 valid_indexs.add(row)
-                distict_rows.add(array)
+                distinct_rows.add(array)
         for row in tuple(copy.__data_area):
             if row not in valid_indexs:
                 del copy.__data_area[row]
@@ -524,7 +538,7 @@ class Table:
     def where(self, test='and', **kw):
         "Select rows that fit criteria given by the test."
         test = self.__process_test(test, kw)
-        copy = self.__class__()
+        copy = type(self)()
         copy.__columns = self.__columns
         copy.__data_area = self.__data_area.copy()
         copy.__row_index = self.__row_index
@@ -573,12 +587,12 @@ class Table:
     def max_(self, column):
         "Finds the largest cell value from the column in the table."
         index = self.__columns[column][1]
-        return max(map(lambda row: row[index], self.__data_area.values()))
+        return max(map(ROW[index], self.__data_area.values()))
 
     def min_(self, column):
         "Finds the smallest cell value from the column in the table."
         index = self.__columns[column][1]
-        return min(map(lambda row: row[index], self.__data_area.values()))
+        return min(map(ROW[index], self.__data_area.values()))
 
     def count(self, column=None):
         "Counts the total number of 'non-null' cells in the given column."
@@ -617,7 +631,7 @@ class Table:
             first = False
             key = tuple(interest)
             if key not in tables:
-                tables[key] = self.__class__(*schema)
+                tables[key] = type(self)(*schema)
             tables[key].insert(*row)
         return tables.values()
 
@@ -754,7 +768,7 @@ class _Columns:
 
     def copy(self):
         "Creates a copy of the known columns."
-        copy = self.__class__([])
+        copy = type(self)([])
         copy.__column_index = self.__column_index
         copy.__column_names = self.__column_names.copy()
         return copy
@@ -826,7 +840,7 @@ class _RowAdapter:
             if name.startswith(column):
                 new_map[name[len(column):]] = self.__map[name]
         assert new_map, 'Name did not match any known column: ' + repr(column)
-        return self.__class__(self.__row, new_map)
+        return type(self)(self.__row, new_map)
 
     __getitem__ = __getattr__
 
@@ -842,7 +856,7 @@ class _RowAdapter:
             if name.startswith(column):
                 row[name[len(column):]] = self.__row[name]
         assert row, 'Name did not match any known column: ' + repr(column)
-        return self.__class__(row)
+        return type(self)(row)
 
 ################################################################################
 
@@ -863,15 +877,14 @@ class _SortedResults:
         title, *rows = tuple(self.__iter)
         index = title.index(self.__column)
         yield title
-        for row in sorted(rows, key=lambda row: row[index], 
-                          reverse=self.__direction):
+        for row in sorted(rows, key=ROW[index], reverse=self.__direction):
             yield row
 
     ########################################################################
 
     def order_by(self, column, desc=False):
         "Returns results that are sorted on an additional level."
-        return self.__class__(self, column, desc)
+        return type(self)(self, column, desc)
 
     def table(self):
         "Converts the sorted results into a table object."
@@ -899,7 +912,7 @@ class _View:
         "Sets the state of the _View instance when unpickled."
         database, query, name_changes = state
         self.__database = database
-        self.__query = types.LambdaType(query, sys.modules)
+        self.__query = types.LambdaType(query, sys.modules, '', (), ())
         self.__name_changes = name_changes
 
     ########################################################################
@@ -978,6 +991,12 @@ class date(datetime.date):
             year = (year_high << 8) + year_low
         return super().__new__(cls, year, month, day)
 
+    def __str__(self):
+        return self.strftime('%d-%b-%Y').upper()
+
+    def __format__(self, length):
+        return str(self).ljust(int(length))
+
 ################################################################################
 
 class datetime(datetime.datetime):
@@ -1005,6 +1024,10 @@ class datetime(datetime.datetime):
         return super().__new__(cls, year, month, day, hour,
                                minute, second, microsecond, tzinfo)
 
+    def date(self):
+        d = super().date()
+        return date(d.year, d.month, d.day)
+
 ################################################################################
 
 class _NamedInstance:
@@ -1020,7 +1043,7 @@ class _NamedInstance:
     @property
     def __name__(self):
         "Provides a way for callable instances to be identified."
-        return self.__class__.__name__
+        return type(self).__name__
 
 ################################################################################
 
@@ -1135,7 +1158,7 @@ def union(table_a, table_b, all_=False):
         table.insert(*row)
     if all_:
         return table
-    return table.distict()
+    return table.distinct()
 
 def rows(iterable):
     "Skips the first row (column names) from a table-style iterator."
@@ -1272,6 +1295,97 @@ def _pre_process(table, prefix):
 
 ################################################################################
 
+import itertools
+import operator
+
+class _Repr:
+
+    def __repr__(self):
+        return '{}({})'.format(
+            type(self).__name__,
+            ', '.join(itertools.starmap('{!s}={!r}'.format,
+                                        sorted(vars(self).items()))))
+
+class _Row(_Repr):
+
+    def __getattr__(self, name):
+        return _Column(name)
+
+    def __getitem__(self, key):
+        return lambda row: row[key]
+
+class _Column(_Row):
+
+    def __init__(self, name):
+        self.__name = name
+
+    def __call__(self, row):
+        return row[self.__name]
+
+    def __getattr__(self, name):
+        if name == 'NOT':
+            return _Comparison(self, lambda a, b: (not a, b)[0], None)
+        return super().__getattr__(self.__name + '.' + name)
+
+    def __lt__(self, other):
+        return _Comparison(self, operator.lt, other)
+
+    def __le__(self, other):
+        return _Comparison(self, operator.le, other)
+
+    def __eq__(self, other):
+        return _Comparison(self, operator.eq, other)
+
+    def __ne__(self, other):
+        return _Comparison(self, operator.ne, other)
+
+    def __gt__(self, other):
+        return _Comparison(self, operator.gt, other)
+
+    def __ge__(self, other):
+        return _Comparison(self, operator.ge, other)
+
+    def in_(self, *items):
+        return _Comparison(self, lambda a, b: a in b, items)
+
+class _Comparison(_Repr):
+
+    def __init__(self, column, op, other):
+        self.__column, self.__op, self.__other = column, op, other
+
+    def __call__(self, row):
+        if isinstance(self.__other, _Column):
+            return self.__op(self.__column(row), self.__other(row))
+        return self.__op(self.__column(row), self.__other)
+
+    def __lt__(self, other):
+        return self & (self.__column < other)
+
+    def __le__(self, other):
+        return self & (self.__column <= other)
+
+    def __eq__(self, other):
+        return self & (self.__column == other)
+
+    def __ne__(self, other):
+        return self & (self.__column != other)
+
+    def __gt__(self, other):
+        return self & (self.__column > other)
+
+    def __ge__(self, other):
+        return self & (self.__column >= other)
+
+    def __and__(self, other):
+        return _Comparison(self, lambda a, b: a and b, other)
+
+    def __or__(self, other):
+        return _Comparison(self, lambda a, b: a or b, other)
+
+ROW = _Row()
+
+################################################################################
+
 def test():
     "Runs several groups of tests of the database engine."
     # Test simple statements in SQL.
@@ -1311,20 +1425,19 @@ def test_basic_sql():
     # Test the select statement.
     persons.select('LastName', 'FirstName').print()
     persons.select().print()
-    # Test the distict statement.
-    persons.select('City').distict().print()
+    # Test the distinct statement.
+    persons.select('City').distinct().print()
     # Test the where clause.
-    persons.where(lambda row: row['City'] == 'Sandnes').print()
+    persons.where(ROW.City == 'Sandnes').print()
     # Test the and operator.
-    persons.where(lambda row: row['FirstName'] == 'Tove' and \
-                  row['LastName'] == 'Svendson').print()
+    persons.where((ROW.FirstName == 'Tove') &
+                  (ROW.LastName == 'Svendson')).print()
     # Test the or operator.
-    persons.where(lambda row: row['FirstName'] == 'Tove' or \
-                  row['FirstName'] == 'Ola').print()
+    persons.where((ROW.FirstName == 'Tove') | (ROW.FirstName == 'Ola')).print()
     # Test both and & or operators.
-    persons.where(lambda row: row['LastName'] == 'Svendson' and \
-                  (row['FirstName'] == 'Tove' or row['FirstName'] == 'Ola')) \
-                  .print()
+    persons.where((ROW.LastName == 'Svendson') &
+                  ((ROW.FirstName == 'Tove') |
+                   (ROW.FirstName == 'Ola'))).print()
     # Test order by statement.
     persons.insert(4, 'Nilsen', 'Tom', 'Vingvn 23', 'Stavanger')
     persons.order_by('LastName').table().print()
@@ -1335,17 +1448,17 @@ def test_basic_sql():
     persons.insert(P_Id=6, LastName='Tjessem', FirstName='Jakob')
     persons.print()
     # Test update statement.
-    persons.where(lambda row: row['LastName'] == 'Tjessem' and \
-                  row['FirstName'] == 'Jakob').update(Address='Nissestien 67',
-                                                      City='Sandnes')
+    persons.where((ROW.LastName == 'Tjessem') &
+                  (ROW.FirstName == 'Jakob')).update(Address='Nissestien 67',
+                                                     City='Sandnes')
     persons.print()
     copy = persons.order_by('P_Id').table()
     copy.update(Address='Nissestien 67', City='Sandnes')
     copy.print()
     # Test delete statement.
     copy = persons.order_by('P_Id').table()
-    copy.delete(lambda row: row['LastName'] == 'Tjessem' and \
-                row['FirstName'] == 'Jakob').print()
+    copy.delete((ROW.LastName == 'Tjessem') &
+                (ROW.FirstName == 'Jakob')).print()
     copy.truncate().print()
     return persons
 
@@ -1367,17 +1480,12 @@ def test_row_selection(persons):
     persons.where(Like('LastName', '[bsp].*')).print()
     persons.where(Like('LastName', '[^bsp].*')).print()
     # Test in operator.
-    persons.where(lambda row: row['LastName'] in \
-                  ('Hansen', 'Pettersen')).print()
+    persons.where(ROW.LastName.in_('Hansen', 'Pettersen')).print()
     # Test manual between syntax.
-    persons.where(lambda row: 'Hansen' < row['LastName'] \
-                  < 'Pettersen').print()
-    persons.where(lambda row: 'Hansen' <= row['LastName'] \
-                  < 'Pettersen').print()
-    persons.where(lambda row: 'Hansen' <= row['LastName'] \
-                  <= 'Pettersen').print()
-    persons.where(lambda row: not ('Hansen' <= row['LastName'] \
-                  < 'Pettersen')).print()
+    persons.where(('Hansen' < ROW.LastName) < 'Pettersen').print()
+    persons.where(('Hansen' <= ROW.LastName) < 'Pettersen').print()
+    persons.where(('Hansen' <= ROW.LastName) <= 'Pettersen').print()
+    persons.where(('Hansen' < ROW.LastName) <= 'Pettersen').print()
 
 def test_all_joins(persons):
     "Tests the four different types of joins in SQL."
@@ -1389,47 +1497,45 @@ def test_all_joins(persons):
     orders.insert(4, 24562, 1)
     orders.insert(5, 34764, 15)
     # Test the inner join function.
-    inner_join(lambda row: row['Persons.P_Id'] == row['Orders.P_Id'],
+    inner_join(ROW.Persons.P_Id == ROW.Orders.P_Id,
                Persons=persons, Orders=orders) \
                .select('Persons.LastName',
                        'Persons.FirstName',
                        'Orders.OrderNo') \
                        .order_by('Persons.LastName').table().print()
     # Test inner join with alias.
-    inner_join(lambda row: row['p.P_Id'] == row['po.P_Id'],
+    inner_join(ROW.p.P_Id == ROW.po.P_Id,
                p=persons, po=orders) \
                .select('po.OrderNo', 'p.LastName', 'p.FirstName') \
-               .where(lambda row: row['p.LastName'] == 'Hansen' \
-                      and row['p.FirstName'] == 'Ola').print()
+               .where((ROW.p.LastName == 'Hansen') &
+                      (ROW.p.FirstName == 'Ola')).print()
     # Test left join with and without alias.
-    left_join((persons, 'Persons'), (orders, 'Orders'), lambda row: \
-              row['Persons.P_Id'] == row['Orders.P_Id']) \
+    left_join((persons, 'Persons'), (orders, 'Orders'),
+              ROW.Persons.P_Id == ROW.Orders.P_Id) \
               .select('Persons.LastName',
                       'Persons.FirstName',
                       'Orders.OrderNo') \
                       .order_by('Persons.LastName').table().print()
-    left_join((persons, 'p'), (orders, 'o'), lambda row: \
-              row['p.P_Id'] == row['o.P_Id']) \
+    left_join((persons, 'p'), (orders, 'o'), ROW.p.P_Id == ROW.o.P_Id) \
               .select('p.LastName',
                       'p.FirstName',
                       'o.OrderNo') \
                       .order_by('p.LastName').table().print()
     # Test right join with and without alias.
-    right_join((persons, 'Persons'), (orders, 'Orders'), lambda row: \
-               row['Persons.P_Id'] == row['Orders.P_Id']) \
+    right_join((persons, 'Persons'), (orders, 'Orders'),
+               ROW.Persons.P_Id == ROW.Orders.P_Id) \
                .select('Persons.LastName',
                        'Persons.FirstName',
                        'Orders.OrderNo') \
                        .order_by('Persons.LastName').table().print()
-    right_join((persons, 'p'), (orders, 'o'), lambda row: \
-               row['p.P_Id'] == row['o.P_Id']) \
+    right_join((persons, 'p'), (orders, 'o'), ROW.p.P_Id == ROW.o.P_Id) \
                .select('p.LastName', 'p.FirstName', 'o.OrderNo') \
                .order_by('p.LastName').table().print()
     # Test full join with and without alias.
-    full_join(lambda row: row['Persons.P_Id'] == row['Orders.P_Id'],
+    full_join(ROW.Persons.P_Id == ROW.Orders.P_Id,
               Persons=persons, Orders=orders) \
               .order_by('Persons.LastName').table().print()
-    full_join(lambda row: row['p.P_Id'] == row['o.P_Id'],
+    full_join(ROW.p.P_Id == ROW.o.P_Id,
               p=persons, o=orders) \
               .select('p.LastName', 'p.FirstName', 'o.OrderNo') \
               .order_by('p.LastName').table().print()
@@ -1460,11 +1566,11 @@ def test_table_addition(persons, orders):
     backup.print()
     # Test select into with where and join clauses.
     backup = Table(('LastName', str), ('FirstName', str))
-    persons.where(lambda row: row['City'] == 'Sandnes') \
-                         .select('LastName', 'FirstName').into(backup)
+    persons.where(ROW.City == 'Sandnes') \
+           .select('LastName', 'FirstName').into(backup)
     backup.print()
     person_orders = Table(('Persons.LastName', str), ('Orders.OrderNo', int))
-    inner_join(lambda row: row['Persons.P_Id'] == row['Orders.P_Id'],
+    inner_join(ROW.Persons.P_Id == ROW.Orders.P_Id,
                Persons=persons, Orders=orders) \
                .select('Persons.LastName', 'Orders.OrderNo') \
                .into(person_orders)
@@ -1478,9 +1584,9 @@ def test_database_support():
     db.create('persons', Table(('Name', str), ('Credit', int)))
     db.create('mapdata', (('time', float), ('place', complex)))
     db.print()
-    db['persons'].insert('Marty', 7 ** 4)
-    db['persons'].insert(Name='Haddock')
-    db['persons'].print()
+    db.persons.insert('Marty', 7 ** 4)
+    db.persons.insert(Name='Haddock')
+    db.persons.print()
 
 def test_northwind():
     "Loads and runs some test on the sample Northwind database."
@@ -1496,13 +1602,12 @@ def test_northwind():
     except IOError:
         return
     # Create and test a current product list view.
-    northwind.create('Current Product List', lambda db: db.Products.where( \
-        lambda row: not row.Discontinued).select('ProductID', 'ProductName'))
+    northwind.create('Current Product List', lambda db: db.Products.where(
+        ROW.Discontinued.NOT).select('ProductID', 'ProductName'))
     northwind['Current Product List'].print()
     # Find all products having an above-average price.
     def above_average_price(db):
-        avg = db.Products.avg('UnitPrice')
-        return db.Products.where(lambda row: row.UnitPrice > avg) \
+        return db.Products.where(ROW.UnitPrice > db.Products.avg('UnitPrice')) \
                .select('ProductName', 'UnitPrice')
     northwind.create('Products Above Average Price', above_average_price)
     northwind['Products Above Average Price'].print()
@@ -1519,11 +1624,11 @@ def test_northwind():
     northwind.create('Category Sales For 1997', category_sales_for_1997)
     northwind['Category Sales For 1997'].print()
     # Show just the Beverages Category from the previous view.
-    northwind['Category Sales For 1997'].where( \
-        lambda row: row.CategoryName == 'Beverages').print()
+    northwind['Category Sales For 1997'].where(
+        ROW.CategoryName == 'Beverages').print()
     # Add the Category column to the Current Product List view.
     northwind.create_or_replace('Current Product List', lambda db: \
-        db['Products View'].where(lambda row: not row.Discontinued) \
+        db['Products View'].where(ROW.Discontinued.NOT) \
         .select('ProductID', 'ProductName', 'Category'))
     northwind['Current Product List'].print()
     # Drop the Category Sales For 1997 view.
@@ -1539,19 +1644,19 @@ def test_date_functionality():
     orderz.insert(3, 'Mozzarella di Giovanni', date(2008, 11, 11))
     orderz.insert(4, 'Mascarpone Fabioloi', date(2008, 10, 29))
     # Query the table for a specific date.
-    orderz.where(lambda row: row.OrderDate == date(2008, 11, 11)).print()
+    orderz.where(ROW.OrderDate == date(2008, 11, 11)).print()
     # Update the orderz table so that times are present with the dates.
     orderz.alter_column('OrderDate', datetime)
-    orderz.where(lambda row: row.OrderId == 1) \
+    orderz.where(ROW.OrderId == 1) \
                         .update(OrderDate=datetime(2008, 11, 11, 13, 23, 44))
-    orderz.where(lambda row: row.OrderId == 2) \
+    orderz.where(ROW.OrderId == 2) \
                         .update(OrderDate=datetime(2008, 11, 9, 15, 45, 21))
-    orderz.where(lambda row: row.OrderId == 3) \
+    orderz.where(ROW.OrderId == 3) \
                         .update(OrderDate=datetime(2008, 11, 11, 11, 12, 1))
-    orderz.where(lambda row: row.OrderId == 4) \
+    orderz.where(ROW.OrderId == 4) \
                         .update(OrderDate=datetime(2008, 10, 29, 14, 56, 59))
     # Query the table with a datetime object this time.
-    orderz.where(lambda row: row.OrderDate == datetime(2008, 11, 11)).print()
+    orderz.where(ROW.OrderDate == datetime(2008, 11, 11)).print()
 
 def test_column_functions():
     "Tests various functions that operate on specified column."
@@ -1567,14 +1672,13 @@ def test_column_functions():
     # Test the "avg" function.
     order_average = order.avg('OrderPrice')
     print('OrderAverage =', order_average, '\n')
-    order.where(lambda row: row.OrderPrice > order_average) \
-                       .select('Customer').print()
+    order.where(ROW.OrderPrice > order_average).select('Customer').print()
     # Test the "count" function.
-    print('CustomerNilsen =', order.where( \
-        lambda row: row.Customer == 'Nilsen').count('Customer'))
+    print('CustomerNilsen =', order.where(
+        ROW.Customer == 'Nilsen').count('Customer'))
     print('NumberOfOrders =', order.count())
     print('NumberOfCustomers =', order.select('Customer') \
-          .distict().count('Customer'))
+          .distinct().count('Customer'))
     # Test the "first" function.
     print('FirstOrderPrice =', order.first('OrderPrice'))
     # Test the "last" function.
