@@ -1,3 +1,21 @@
+formats
+=======
+
+http://code.activestate.com/recipes/recid/
+http://code.activestate.com/recipes/tags/tagid/
+http://code.activestate.com/recipes/langs/python/tags/meta:requires=module/
+
+notes
+=====
+
+c1 = lambda: 'thing'
+c2 = repeat('thing').next
+
+not not (a and b)
+bool(a and b)
+
+s = frozenset([k]) remember k.__hash__()
+
 recipes
 =======
 
